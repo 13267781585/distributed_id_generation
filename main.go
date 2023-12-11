@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"net"
 	"time"
-	"uuid_server/kitex_gen/uuid/generator/server/uuidgeneratorserver"
-	"uuid_server/logic"
 
 	"github.com/cloudwego/kitex/server"
+
+	"uuid_server/kitex_gen/uuid/generator/server/uuidgeneratorserver"
+	"uuid_server/logic"
 )
 
 func main() {

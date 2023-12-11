@@ -1,10 +1,11 @@
 package logic
 
 import (
-	"github.com/luci/go-render/render"
 	"math/rand"
 	"testing"
 	"time"
+
+	"github.com/luci/go-render/render"
 )
 
 func TestBufferSingleGetHighQPS(t *testing.T) {

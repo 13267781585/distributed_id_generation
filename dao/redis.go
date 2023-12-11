@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"uuid_server/model"
 
 	"github.com/luci/go-render/render"
+
+	"uuid_server/model"
 )
 
 var redisCount = int64(0)
