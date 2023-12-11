@@ -3,9 +3,11 @@ package logic
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
+	"uuid_server/hook"
 	"uuid_server/tools"
 
 	"github.com/luci/go-render/render"
@@ -40,14 +42,14 @@ type Config struct {
 
 func NewDefaultMysqlConfig() *Config {
 	return &Config{
-		DaoFetcher: &dao.UIDCounterMysql{},
+		DaoFetcher: &dao.UUIDMysql{},
 		Source:     model.MysqlCacheSource,
 	}
 }
 
 func NewDefaultRedisConfig() *Config {
 	return &Config{
-		DaoFetcher: &dao.UIDCounterRedis{},
+		DaoFetcher: &dao.UUIDRedis{},
 		Source:     model.RedisCacheSource,
 	}
 }
@@ -92,6 +94,7 @@ type UUIDBuffer struct {
 	maxFetchCount int64
 	qpsBuffer     int64 // pqs * qpsBuffer = 拉取数据量
 	bizCode       int64 // 业务类型
+	boundsHook    hook.IntervalBoundHook
 }
 
 func NewUUIDBuffer(config *Config) *UUIDBuffer {
@@ -99,7 +102,7 @@ func NewUUIDBuffer(config *Config) *UUIDBuffer {
 		linkedList:   tools.NewLinkedList(),
 		checkCapChan: make(chan CheckType, 1),
 
-		daoFetcher: &dao.UIDCounterMysql{},
+		daoFetcher: &dao.UUIDMysql{},
 		source:     model.MysqlCacheSource,
 
 		cap:           defaultCap,
@@ -107,6 +110,7 @@ func NewUUIDBuffer(config *Config) *UUIDBuffer {
 		minFetchCount: defaultMinFetchCount,
 		maxFetchCount: defaultMaxFetchCount,
 		qpsBuffer:     defaultQPSBuffer,
+		boundsHook:    hook.NewDefaultRedisBoundHook(),
 	}
 
 	buffer.daoFetcher = config.DaoFetcher
@@ -142,6 +146,9 @@ func NewUUIDBuffer(config *Config) *UUIDBuffer {
 }
 
 func (p *UUIDBuffer) Start() {
+	// 先加载上次退出还没使用的uuid
+	p.loadBounds()
+
 	go p.connFetch()
 	// 初始化触发拉取数据
 	select {
@@ -230,6 +237,53 @@ func (p *UUIDBuffer) isBufferClose() bool {
 
 func (p *UUIDBuffer) Stop() {
 	atomic.StoreInt64(&p.isClose, 1)
+	p.storeBounds()
+	close(p.checkCapChan)
+}
+
+func (p *UUIDBuffer) storeBounds() {
+	if p.boundsHook != nil {
+		p.getLock.Lock()
+		defer p.getLock.Unlock()
+		boundsVal := p.linkedList.MPop(math.MaxInt64)
+		if len(boundsVal) == 0 {
+			return
+		}
+
+		bounds := make([]*model.Bound, len(boundsVal))
+		for i, boundVal := range boundsVal {
+			bound, ok := boundVal.(*model.Bound)
+			if !ok {
+				fmt.Printf("store bounds converts err,boundsVal:%v \n", render.Render(boundsVal))
+				return
+			}
+			bounds[i] = bound
+		}
+		p.boundsHook.Store(bounds, p.bizCode, p.source)
+	}
+}
+
+func (p *UUIDBuffer) loadBounds() {
+	if p.boundsHook == nil {
+		return
+	}
+
+	bounds, err := p.boundsHook.Load(p.bizCode, p.source)
+	if err != nil || len(bounds) == 0 {
+		return
+	}
+
+	var size int64
+	for _, bound := range bounds {
+		interval := bound.End - bound.Start
+		if interval > 0 {
+			size += interval
+		}
+	}
+	atomic.StoreInt64(&p.size, size)
+	p.linkedList.MPush(bounds)
+
+	fmt.Printf("load bound res:%v,size:%v \n", render.Render(bounds), atomic.LoadInt64(&p.size))
 }
 
 func (p *UUIDBuffer) GetUUIDBound(count int64) ([]*model.UUIDBound, error) {
